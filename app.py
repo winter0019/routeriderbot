@@ -18,33 +18,44 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 # ==========================
 
 def get_db():
-    return psycopg2.connect(DATABASE_URL)
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL not set in Railway variables")
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
+
 
 def init_db():
-    conn = get_db()
-    cur = conn.cursor()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS drivers (
-        id SERIAL PRIMARY KEY,
-        phone VARCHAR(20) UNIQUE NOT NULL,
-        details TEXT NOT NULL
-    );
-    """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS drivers (
+            id SERIAL PRIMARY KEY,
+            phone VARCHAR(20) UNIQUE NOT NULL,
+            details TEXT NOT NULL
+        );
+        """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS trips (
-        id SERIAL PRIMARY KEY,
-        driver_phone VARCHAR(20),
-        details TEXT,
-        completed BOOLEAN DEFAULT FALSE
-    );
-    """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS trips (
+            id SERIAL PRIMARY KEY,
+            driver_phone VARCHAR(20),
+            details TEXT,
+            completed BOOLEAN DEFAULT FALSE
+        );
+        """)
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
 
+        print("✅ Database initialized successfully")
+
+    except Exception as e:
+        print("❌ Database initialization failed:", e)
+
+
+# Initialize database safely
 init_db()
 
 user_states = {}
@@ -82,7 +93,7 @@ def webhook():
                     send_message(from_number, response)
 
         except Exception as e:
-            print("Error:", e)
+            print("❌ Webhook processing error:", e)
 
         return jsonify({'status': 'ok'}), 200
 
@@ -95,8 +106,12 @@ def process_message(text, phone):
     text = text.strip()
     lower = text.lower()
 
-    conn = get_db()
-    cur = conn.cursor()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+    except Exception as e:
+        print("❌ DB connection error:", e)
+        return "⚠️ System temporarily unavailable."
 
     # =====================
     # HANDLE STATES
@@ -104,17 +119,22 @@ def process_message(text, phone):
 
     if user_states.get(phone) == "registering":
         try:
-            cur.execute("INSERT INTO drivers (phone, details) VALUES (%s, %s)",
-                        (phone, text))
+            cur.execute(
+                "INSERT INTO drivers (phone, details) VALUES (%s, %s)",
+                (phone, text)
+            )
             conn.commit()
             user_states.pop(phone)
             return "🎉 Registration successful! You are now a registered driver."
-        except:
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
             return "❌ You are already registered."
 
     if user_states.get(phone) == "posting_trip":
-        cur.execute("INSERT INTO trips (driver_phone, details) VALUES (%s, %s)",
-                    (phone, text))
+        cur.execute(
+            "INSERT INTO trips (driver_phone, details) VALUES (%s, %s)",
+            (phone, text)
+        )
         conn.commit()
         user_states.pop(phone)
         return "🚗 Trip posted successfully!"
@@ -142,7 +162,7 @@ CAR:
 PLATE:"""
 
     if lower == "/post_trip":
-        cur.execute("SELECT * FROM drivers WHERE phone=%s", (phone,))
+        cur.execute("SELECT 1 FROM drivers WHERE phone=%s", (phone,))
         if not cur.fetchone():
             return "❌ You must register first using /register"
 
@@ -156,7 +176,10 @@ SEATS:
 PRICE:"""
 
     if lower == "/my_stats":
-        cur.execute("SELECT COUNT(*) FROM trips WHERE driver_phone=%s", (phone,))
+        cur.execute(
+            "SELECT COUNT(*) FROM trips WHERE driver_phone=%s",
+            (phone,)
+        )
         total_trips = cur.fetchone()[0]
 
         return f"""📊 YOUR STATS
@@ -167,8 +190,10 @@ More analytics coming soon!"""
     if lower.startswith("/complete"):
         try:
             trip_id = int(lower.split()[1])
-            cur.execute("UPDATE trips SET completed=TRUE WHERE id=%s AND driver_phone=%s",
-                        (trip_id, phone))
+            cur.execute(
+                "UPDATE trips SET completed=TRUE WHERE id=%s AND driver_phone=%s",
+                (trip_id, phone)
+            )
             conn.commit()
             return "✅ Trip marked as complete!"
         except:
@@ -186,6 +211,7 @@ More analytics coming soon!"""
 
 def send_message(to, message):
     url = f'https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages'
+
     headers = {
         'Authorization': f'Bearer {WHATSAPP_TOKEN}',
         'Content-Type': 'application/json'
@@ -198,7 +224,10 @@ def send_message(to, message):
         'text': {'body': message}
     }
 
-    requests.post(url, json=payload, headers=headers)
+    response = requests.post(url, json=payload, headers=headers)
+
+    if response.status_code != 200:
+        print("❌ WhatsApp send error:", response.text)
 
 
 @app.route('/')
