@@ -23,11 +23,11 @@ def get_db():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 def init_db():
+    """Create all required tables if they don't exist"""
     try:
         conn = get_db()
         cur = conn.cursor()
 
-        # Create or verify all tables
         cur.execute("""
         CREATE TABLE IF NOT EXISTS drivers (
             id SERIAL PRIMARY KEY,
@@ -66,8 +66,12 @@ def init_db():
     except Exception as e:
         print(f"❌ Database initialization failed: {e}")
 
-# Initialize DB on startup
+# Run DB initialization at startup
 init_db()
+
+# ==========================
+# USER STATE HANDLING
+# ==========================
 
 user_states = {}
 
@@ -81,7 +85,6 @@ def webhook():
         mode = request.args.get('hub.mode')
         token = request.args.get('hub.verify_token')
         challenge = request.args.get('hub.challenge')
-
         if mode == 'subscribe' and token == VERIFY_TOKEN:
             return challenge, 200
         return 'Forbidden', 403
@@ -115,8 +118,10 @@ def process_message(text, phone):
     text = text.strip()
     lower = text.lower()
 
-    # Commands that don't touch DB
-    if lower in ["/help"]:
+    # -------------------------
+    # COMMANDS THAT DON'T TOUCH DB
+    # -------------------------
+    if lower == "/help":
         return """🚗 ROUTERIDER BOT COMMANDS
 
 /register - Register as driver
@@ -163,7 +168,7 @@ def process_message(text, phone):
             return "🚕 Ride request submitted! Drivers will be matched soon."
 
         # -------------------------
-        # COMMANDS
+        # COMMANDS THAT TOUCH DB
         # -------------------------
         if lower == "/register":
             user_states[phone] = "registering"
@@ -228,7 +233,7 @@ TIME:"""
         return "Send /help to see available commands."
 
     except Exception as e:
-        print(f"❌ DB Error for {phone}: {e}")
+        print(f"❌ DB Error for {phone}: {e}")  # <- See exact DB error in Railway logs
         return "⚠️ Something went wrong. Try again."
 
     finally:
@@ -243,19 +248,16 @@ TIME:"""
 
 def send_message(to, message):
     url = f'https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages'
-
     headers = {
         'Authorization': f'Bearer {WHATSAPP_TOKEN}',
         'Content-Type': 'application/json'
     }
-
     payload = {
         'messaging_product': 'whatsapp',
         'to': to,
         'type': 'text',
         'text': {'body': message}
     }
-
     response = requests.post(url, json=payload, headers=headers)
     if response.status_code != 200:
         print(f"❌ WhatsApp send error: {response.status_code} {response.text}")
