@@ -29,21 +29,20 @@ def init_db():
         cur = conn.cursor()
 
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS drivers (
-            id SERIAL PRIMARY KEY,
-            phone VARCHAR(20) UNIQUE NOT NULL,
-            details TEXT NOT NULL
-        );
-        """)
+CREATE TABLE IF NOT EXISTS passengers (
+    id SERIAL PRIMARY KEY,
+    phone VARCHAR(20) UNIQUE NOT NULL
+);
+""")
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS trips (
-            id SERIAL PRIMARY KEY,
-            driver_phone VARCHAR(20),
-            details TEXT,
-            completed BOOLEAN DEFAULT FALSE
-        );
-        """)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS ride_requests (
+    id SERIAL PRIMARY KEY,
+    passenger_phone VARCHAR(20),
+    details TEXT,
+    matched BOOLEAN DEFAULT FALSE
+);
+""")
 
         conn.commit()
         cur.close()
@@ -212,6 +211,26 @@ More analytics coming soon!"""
         if conn:
             conn.close()
 
+if lower == "/ride":
+    user_states[phone] = "requesting_ride"
+    return """🧍 REQUEST A RIDE
+
+Reply with:
+FROM:
+TO:
+DATE:
+TIME:"""
+
+if user_states.get(phone) == "requesting_ride":
+    cur.execute(
+        "INSERT INTO ride_requests (passenger_phone, details) VALUES (%s, %s)",
+        (phone, text)
+    )
+    conn.commit()
+    user_states.pop(phone)
+    return "🚕 Ride request submitted! Drivers will be matched soon."
+
+
 # ==========================
 # SEND MESSAGE
 # ==========================
@@ -245,4 +264,5 @@ def home():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
 
