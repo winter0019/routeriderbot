@@ -129,7 +129,7 @@ def process_message(text, phone):
     # -------------------------
     # COMMANDS THAT DON'T NEED DB
     # -------------------------
-    if lower == "/help":
+    if lower in ["/help"]:
         return """🚗 ROUTERIDER BOT COMMANDS
 
 /register - Register as driver
@@ -243,7 +243,7 @@ TIME:"""
         return "Send /help to see available commands."
 
     except Exception as e:
-        print("❌ Error in process_message:", e)
+        print(f"❌ Error in process_message for {phone}: {e}")
         return "⚠️ Something went wrong. Try again."
 
     finally:
@@ -275,7 +275,7 @@ def send_message(to, message):
     response = requests.post(url, json=payload, headers=headers)
 
     if response.status_code != 200:
-        print("❌ WhatsApp send error:", response.text)
+        print(f"❌ WhatsApp send error: {response.status_code} {response.text}")
 
 
 # ==========================
