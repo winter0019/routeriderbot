@@ -22,13 +22,12 @@ def get_db():
         raise Exception("DATABASE_URL not set in Railway variables")
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
-
 def init_db():
     try:
         conn = get_db()
         cur = conn.cursor()
 
-        # Drivers table
+        # Create or verify all tables
         cur.execute("""
         CREATE TABLE IF NOT EXISTS drivers (
             id SERIAL PRIMARY KEY,
@@ -36,8 +35,6 @@ def init_db():
             details TEXT NOT NULL
         );
         """)
-
-        # Trips table
         cur.execute("""
         CREATE TABLE IF NOT EXISTS trips (
             id SERIAL PRIMARY KEY,
@@ -46,16 +43,12 @@ def init_db():
             completed BOOLEAN DEFAULT FALSE
         );
         """)
-
-        # Passengers table
         cur.execute("""
         CREATE TABLE IF NOT EXISTS passengers (
             id SERIAL PRIMARY KEY,
             phone VARCHAR(20) UNIQUE NOT NULL
         );
         """)
-
-        # Ride requests table
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ride_requests (
             id SERIAL PRIMARY KEY,
@@ -68,14 +61,12 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
-
         print("✅ Database initialized successfully")
 
     except Exception as e:
-        print("❌ Database initialization failed:", e)
+        print(f"❌ Database initialization failed: {e}")
 
-
-# Initialize database safely
+# Initialize DB on startup
 init_db()
 
 user_states = {}
@@ -97,7 +88,6 @@ def webhook():
 
     elif request.method == 'POST':
         data = request.get_json()
-
         try:
             entry = data['entry'][0]
             changes = entry['changes'][0]
@@ -113,10 +103,9 @@ def webhook():
                     send_message(from_number, response)
 
         except Exception as e:
-            print("❌ Webhook processing error:", e)
+            print(f"❌ Webhook processing error: {e}")
 
         return jsonify({'status': 'ok'}), 200
-
 
 # ==========================
 # BOT LOGIC
@@ -126,9 +115,7 @@ def process_message(text, phone):
     text = text.strip()
     lower = text.lower()
 
-    # -------------------------
-    # COMMANDS THAT DON'T NEED DB
-    # -------------------------
+    # Commands that don't touch DB
     if lower in ["/help"]:
         return """🚗 ROUTERIDER BOT COMMANDS
 
@@ -176,7 +163,7 @@ def process_message(text, phone):
             return "🚕 Ride request submitted! Drivers will be matched soon."
 
         # -------------------------
-        # COMMANDS THAT NEED DB
+        # COMMANDS
         # -------------------------
         if lower == "/register":
             user_states[phone] = "registering"
@@ -208,7 +195,6 @@ PRICE:"""
                 (phone,)
             )
             total_trips = cur.fetchone()[0]
-
             return f"""📊 YOUR STATS
 
 Total Trips: {total_trips}
@@ -225,7 +211,6 @@ More analytics coming soon!"""
                 (trip_id, phone)
             )
             conn.commit()
-
             if cur.rowcount == 0:
                 return "❌ Trip not found."
             return "✅ Trip marked as complete!"
@@ -243,7 +228,7 @@ TIME:"""
         return "Send /help to see available commands."
 
     except Exception as e:
-        print(f"❌ Error in process_message for {phone}: {e}")
+        print(f"❌ DB Error for {phone}: {e}")
         return "⚠️ Something went wrong. Try again."
 
     finally:
@@ -251,7 +236,6 @@ TIME:"""
             cur.close()
         if conn:
             conn.close()
-
 
 # ==========================
 # SEND MESSAGE
@@ -273,10 +257,8 @@ def send_message(to, message):
     }
 
     response = requests.post(url, json=payload, headers=headers)
-
     if response.status_code != 200:
         print(f"❌ WhatsApp send error: {response.status_code} {response.text}")
-
 
 # ==========================
 # HOME ROUTE
@@ -285,7 +267,6 @@ def send_message(to, message):
 @app.route('/')
 def home():
     return 'RouteRider Bot Running 🚗', 200
-
 
 # ==========================
 # RUN APP
