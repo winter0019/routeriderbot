@@ -28,21 +28,42 @@ def init_db():
         conn = get_db()
         cur = conn.cursor()
 
+        # Drivers table
         cur.execute("""
-CREATE TABLE IF NOT EXISTS passengers (
-    id SERIAL PRIMARY KEY,
-    phone VARCHAR(20) UNIQUE NOT NULL
-);
-""")
+        CREATE TABLE IF NOT EXISTS drivers (
+            id SERIAL PRIMARY KEY,
+            phone VARCHAR(20) UNIQUE NOT NULL,
+            details TEXT NOT NULL
+        );
+        """)
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS ride_requests (
-    id SERIAL PRIMARY KEY,
-    passenger_phone VARCHAR(20),
-    details TEXT,
-    matched BOOLEAN DEFAULT FALSE
-);
-""")
+        # Trips table
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS trips (
+            id SERIAL PRIMARY KEY,
+            driver_phone VARCHAR(20),
+            details TEXT,
+            completed BOOLEAN DEFAULT FALSE
+        );
+        """)
+
+        # Passengers table
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS passengers (
+            id SERIAL PRIMARY KEY,
+            phone VARCHAR(20) UNIQUE NOT NULL
+        );
+        """)
+
+        # Ride requests table
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ride_requests (
+            id SERIAL PRIMARY KEY,
+            passenger_phone VARCHAR(20),
+            details TEXT,
+            matched BOOLEAN DEFAULT FALSE
+        );
+        """)
 
         conn.commit()
         cur.close()
@@ -134,6 +155,15 @@ def process_message(text, phone):
             user_states.pop(phone)
             return "🚗 Trip posted successfully!"
 
+        if user_states.get(phone) == "requesting_ride":
+            cur.execute(
+                "INSERT INTO ride_requests (passenger_phone, details) VALUES (%s, %s)",
+                (phone, text)
+            )
+            conn.commit()
+            user_states.pop(phone)
+            return "🚕 Ride request submitted! Drivers will be matched soon."
+
         # =====================
         # COMMANDS
         # =====================
@@ -144,7 +174,8 @@ def process_message(text, phone):
 /register - Register as driver
 /post_trip - Post a new trip
 /my_stats - View your statistics
-/complete [trip_id] - Mark trip as complete"""
+/complete [trip_id] - Mark trip as complete
+/ride - Request a ride"""
 
         if lower == "/register":
             user_states[phone] = "registering"
@@ -199,21 +230,9 @@ More analytics coming soon!"""
                 return "❌ Trip not found."
             return "✅ Trip marked as complete!"
 
-        return "Send /help to see available commands."
-
-    except Exception as e:
-        print("Error:", e)
-        return "⚠️ Something went wrong. Try again."
-
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
-
-if lower == "/ride":
-    user_states[phone] = "requesting_ride"
-    return """🧍 REQUEST A RIDE
+        if lower == "/ride":
+            user_states[phone] = "requesting_ride"
+            return """🧍 REQUEST A RIDE
 
 Reply with:
 FROM:
@@ -221,14 +240,17 @@ TO:
 DATE:
 TIME:"""
 
-if user_states.get(phone) == "requesting_ride":
-    cur.execute(
-        "INSERT INTO ride_requests (passenger_phone, details) VALUES (%s, %s)",
-        (phone, text)
-    )
-    conn.commit()
-    user_states.pop(phone)
-    return "🚕 Ride request submitted! Drivers will be matched soon."
+        return "Send /help to see available commands."
+
+    except Exception as e:
+        print("❌ Error in process_message:", e)
+        return "⚠️ Something went wrong. Try again."
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 
 # ==========================
@@ -256,13 +278,19 @@ def send_message(to, message):
         print("❌ WhatsApp send error:", response.text)
 
 
+# ==========================
+# HOME ROUTE
+# ==========================
+
 @app.route('/')
 def home():
     return 'RouteRider Bot Running 🚗', 200
 
 
+# ==========================
+# RUN APP
+# ==========================
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
-
