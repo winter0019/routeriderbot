@@ -126,6 +126,18 @@ def process_message(text, phone):
     text = text.strip()
     lower = text.lower()
 
+    # -------------------------
+    # COMMANDS THAT DON'T NEED DB
+    # -------------------------
+    if lower == "/help":
+        return """🚗 ROUTERIDER BOT COMMANDS
+
+/register - Register as driver
+/post_trip - Post a new trip
+/my_stats - View your statistics
+/complete [trip_id] - Mark trip as complete
+/ride - Request a ride"""
+
     conn = None
     cur = None
 
@@ -133,10 +145,9 @@ def process_message(text, phone):
         conn = get_db()
         cur = conn.cursor()
 
-        # =====================
+        # -------------------------
         # HANDLE STATES
-        # =====================
-
+        # -------------------------
         if user_states.get(phone) == "registering":
             cur.execute(
                 "INSERT INTO drivers (phone, details) VALUES (%s, %s)",
@@ -164,19 +175,9 @@ def process_message(text, phone):
             user_states.pop(phone)
             return "🚕 Ride request submitted! Drivers will be matched soon."
 
-        # =====================
-        # COMMANDS
-        # =====================
-
-        if lower == "/help":
-            return """🚗 ROUTERIDER BOT COMMANDS
-
-/register - Register as driver
-/post_trip - Post a new trip
-/my_stats - View your statistics
-/complete [trip_id] - Mark trip as complete
-/ride - Request a ride"""
-
+        # -------------------------
+        # COMMANDS THAT NEED DB
+        # -------------------------
         if lower == "/register":
             user_states[phone] = "registering"
             return """✅ DRIVER REGISTRATION
@@ -219,7 +220,6 @@ More analytics coming soon!"""
                 return "Usage: /complete 1"
 
             trip_id = int(parts[1])
-
             cur.execute(
                 "UPDATE trips SET completed=TRUE WHERE id=%s AND driver_phone=%s",
                 (trip_id, phone)
