@@ -106,19 +106,18 @@ def process_message(text, phone):
     text = text.strip()
     lower = text.lower()
 
+    conn = None
+    cur = None
+
     try:
         conn = get_db()
         cur = conn.cursor()
-    except Exception as e:
-        print("❌ DB connection error:", e)
-        return "⚠️ System temporarily unavailable."
 
-    # =====================
-    # HANDLE STATES
-    # =====================
+        # =====================
+        # HANDLE STATES
+        # =====================
 
-    if user_states.get(phone) == "registering":
-        try:
+        if user_states.get(phone) == "registering":
             cur.execute(
                 "INSERT INTO drivers (phone, details) VALUES (%s, %s)",
                 (phone, text)
@@ -126,34 +125,31 @@ def process_message(text, phone):
             conn.commit()
             user_states.pop(phone)
             return "🎉 Registration successful! You are now a registered driver."
-        except psycopg2.errors.UniqueViolation:
-            conn.rollback()
-            return "❌ You are already registered."
 
-    if user_states.get(phone) == "posting_trip":
-        cur.execute(
-            "INSERT INTO trips (driver_phone, details) VALUES (%s, %s)",
-            (phone, text)
-        )
-        conn.commit()
-        user_states.pop(phone)
-        return "🚗 Trip posted successfully!"
+        if user_states.get(phone) == "posting_trip":
+            cur.execute(
+                "INSERT INTO trips (driver_phone, details) VALUES (%s, %s)",
+                (phone, text)
+            )
+            conn.commit()
+            user_states.pop(phone)
+            return "🚗 Trip posted successfully!"
 
-    # =====================
-    # COMMANDS
-    # =====================
+        # =====================
+        # COMMANDS
+        # =====================
 
-    if lower == "/help":
-        return """🚗 ROUTERIDER BOT COMMANDS
+        if lower == "/help":
+            return """🚗 ROUTERIDER BOT COMMANDS
 
 /register - Register as driver
 /post_trip - Post a new trip
 /my_stats - View your statistics
 /complete [trip_id] - Mark trip as complete"""
 
-    if lower == "/register":
-        user_states[phone] = "registering"
-        return """✅ DRIVER REGISTRATION
+        if lower == "/register":
+            user_states[phone] = "registering"
+            return """✅ DRIVER REGISTRATION
 
 Reply with:
 NAME:
@@ -161,13 +157,13 @@ ROUTE:
 CAR:
 PLATE:"""
 
-    if lower == "/post_trip":
-        cur.execute("SELECT 1 FROM drivers WHERE phone=%s", (phone,))
-        if not cur.fetchone():
-            return "❌ You must register first using /register"
+        if lower == "/post_trip":
+            cur.execute("SELECT 1 FROM drivers WHERE phone=%s", (phone,))
+            if not cur.fetchone():
+                return "❌ You must register first using /register"
 
-        user_states[phone] = "posting_trip"
-        return """🚗 POST TRIP
+            user_states[phone] = "posting_trip"
+            return """🚗 POST TRIP
 
 Reply with:
 DATE:
@@ -175,35 +171,46 @@ TIME:
 SEATS:
 PRICE:"""
 
-    if lower == "/my_stats":
-        cur.execute(
-            "SELECT COUNT(*) FROM trips WHERE driver_phone=%s",
-            (phone,)
-        )
-        total_trips = cur.fetchone()[0]
+        if lower == "/my_stats":
+            cur.execute(
+                "SELECT COUNT(*) FROM trips WHERE driver_phone=%s",
+                (phone,)
+            )
+            total_trips = cur.fetchone()[0]
 
-        return f"""📊 YOUR STATS
+            return f"""📊 YOUR STATS
 
 Total Trips: {total_trips}
 More analytics coming soon!"""
 
-    if lower.startswith("/complete"):
-        try:
-            trip_id = int(lower.split()[1])
+        if lower.startswith("/complete"):
+            parts = lower.split()
+            if len(parts) != 2:
+                return "Usage: /complete 1"
+
+            trip_id = int(parts[1])
+
             cur.execute(
                 "UPDATE trips SET completed=TRUE WHERE id=%s AND driver_phone=%s",
                 (trip_id, phone)
             )
             conn.commit()
+
+            if cur.rowcount == 0:
+                return "❌ Trip not found."
             return "✅ Trip marked as complete!"
-        except:
-            return "Usage: /complete 1"
 
-    cur.close()
-    conn.close()
+        return "Send /help to see available commands."
 
-    return "Send /help to see available commands."
+    except Exception as e:
+        print("Error:", e)
+        return "⚠️ Something went wrong. Try again."
 
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 # ==========================
 # SEND MESSAGE
@@ -238,3 +245,4 @@ def home():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
