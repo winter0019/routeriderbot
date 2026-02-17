@@ -252,28 +252,6 @@ TIME:"""
         if conn:
             conn.close()
 
-# -------------------------
-# COMMANDS THAT NEED DB
-# -------------------------
-if lower == "/ride":
-    user_states[phone] = "requesting_ride"
-    return """🧍 REQUEST A RIDE
-
-Reply with:
-FROM:
-TO:
-DATE:
-TIME:"""
-
-# Handle ride request submission
-if user_states.get(phone) == "requesting_ride":
-    cur.execute(
-        "INSERT INTO ride_requests (passenger_phone, details) VALUES (%s, %s)",
-        (phone, text)
-    )
-    conn.commit()
-    user_states.pop(phone)
-    return "🚕 Ride request submitted! Drivers will be matched soon."
 
 # ==========================
 # SEND MESSAGE
@@ -316,4 +294,3 @@ def home():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
