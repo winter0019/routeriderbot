@@ -8,10 +8,10 @@ load_dotenv()
 
 app = Flask(__name__)
 
-WHATSAPP_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN')
-PHONE_NUMBER_ID = os.getenv('WHATSAPP_PHONE_NUMBER_ID')
-VERIFY_TOKEN = os.getenv('WEBHOOK_VERIFY_TOKEN')
-DATABASE_URL = os.getenv('DATABASE_URL')
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
+PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ==========================
 # DATABASE CONNECTION
@@ -22,12 +22,13 @@ def get_db():
         raise Exception("DATABASE_URL not set in Railway variables")
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
+
 def init_db():
-    """Create all required tables if they don't exist"""
     try:
         conn = get_db()
         cur = conn.cursor()
 
+        # Drivers
         cur.execute("""
         CREATE TABLE IF NOT EXISTS drivers (
             id SERIAL PRIMARY KEY,
@@ -35,6 +36,8 @@ def init_db():
             details TEXT NOT NULL
         );
         """)
+
+        # Trips
         cur.execute("""
         CREATE TABLE IF NOT EXISTS trips (
             id SERIAL PRIMARY KEY,
@@ -43,12 +46,16 @@ def init_db():
             completed BOOLEAN DEFAULT FALSE
         );
         """)
+
+        # Passengers
         cur.execute("""
         CREATE TABLE IF NOT EXISTS passengers (
             id SERIAL PRIMARY KEY,
             phone VARCHAR(20) UNIQUE NOT NULL
         );
         """)
+
+        # Ride Requests
         cur.execute("""
         CREATE TABLE IF NOT EXISTS ride_requests (
             id SERIAL PRIMARY KEY,
@@ -61,17 +68,15 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
+
         print("✅ Database initialized successfully")
 
     except Exception as e:
-        print(f"❌ Database initialization failed: {e}")
+        print("❌ Database initialization failed:", e)
 
-# Run DB initialization at startup
+
+# Initialize DB on startup
 init_db()
-
-# ==========================
-# USER STATE HANDLING
-# ==========================
 
 user_states = {}
 
@@ -79,36 +84,39 @@ user_states = {}
 # WEBHOOK
 # ==========================
 
-@app.route('/webhook/whatsapp', methods=['GET', 'POST'])
+@app.route("/webhook/whatsapp", methods=["GET", "POST"])
 def webhook():
-    if request.method == 'GET':
-        mode = request.args.get('hub.mode')
-        token = request.args.get('hub.verify_token')
-        challenge = request.args.get('hub.challenge')
-        if mode == 'subscribe' and token == VERIFY_TOKEN:
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+
+        if mode == "subscribe" and token == VERIFY_TOKEN:
             return challenge, 200
-        return 'Forbidden', 403
+        return "Forbidden", 403
 
-    elif request.method == 'POST':
+    elif request.method == "POST":
         data = request.get_json()
-        try:
-            entry = data['entry'][0]
-            changes = entry['changes'][0]
-            value = changes['value']
 
-            if 'messages' in value:
-                message = value['messages'][0]
-                from_number = message['from']
-                message_text = message['text']['body']
+        try:
+            entry = data["entry"][0]
+            changes = entry["changes"][0]
+            value = changes["value"]
+
+            if "messages" in value:
+                message = value["messages"][0]
+                from_number = message["from"]
+                message_text = message["text"]["body"]
 
                 response = process_message(message_text, from_number)
                 if response:
                     send_message(from_number, response)
 
         except Exception as e:
-            print(f"❌ Webhook processing error: {e}")
+            print("❌ Webhook processing error:", e)
 
-        return jsonify({'status': 'ok'}), 200
+        return jsonify({"status": "ok"}), 200
+
 
 # ==========================
 # BOT LOGIC
@@ -118,18 +126,6 @@ def process_message(text, phone):
     text = text.strip()
     lower = text.lower()
 
-    # -------------------------
-    # COMMANDS THAT DON'T TOUCH DB
-    # -------------------------
-    if lower == "/help":
-        return """🚗 ROUTERIDER BOT COMMANDS
-
-/register - Register as driver
-/post_trip - Post a new trip
-/my_stats - View your statistics
-/complete [trip_id] - Mark trip as complete
-/ride - Request a ride"""
-
     conn = None
     cur = None
 
@@ -137,13 +133,14 @@ def process_message(text, phone):
         conn = get_db()
         cur = conn.cursor()
 
-        # -------------------------
-        # HANDLE STATES
-        # -------------------------
+        # =====================
+        # STATE HANDLING
+        # =====================
+
         if user_states.get(phone) == "registering":
             cur.execute(
                 "INSERT INTO drivers (phone, details) VALUES (%s, %s)",
-                (phone, text)
+                (phone, text),
             )
             conn.commit()
             user_states.pop(phone)
@@ -152,7 +149,7 @@ def process_message(text, phone):
         if user_states.get(phone) == "posting_trip":
             cur.execute(
                 "INSERT INTO trips (driver_phone, details) VALUES (%s, %s)",
-                (phone, text)
+                (phone, text),
             )
             conn.commit()
             user_states.pop(phone)
@@ -161,15 +158,25 @@ def process_message(text, phone):
         if user_states.get(phone) == "requesting_ride":
             cur.execute(
                 "INSERT INTO ride_requests (passenger_phone, details) VALUES (%s, %s)",
-                (phone, text)
+                (phone, text),
             )
             conn.commit()
             user_states.pop(phone)
             return "🚕 Ride request submitted! Drivers will be matched soon."
 
-        # -------------------------
-        # COMMANDS THAT TOUCH DB
-        # -------------------------
+        # =====================
+        # COMMANDS
+        # =====================
+
+        if lower == "/help":
+            return """🚗 ROUTERIDER BOT COMMANDS
+
+/register - Register as driver
+/post_trip - Post a new trip
+/ride - Request a ride
+/my_stats - View your statistics
+/complete [trip_id] - Mark trip as complete"""
+
         if lower == "/register":
             user_states[phone] = "registering"
             return """✅ DRIVER REGISTRATION
@@ -194,12 +201,23 @@ TIME:
 SEATS:
 PRICE:"""
 
+        if lower == "/ride":
+            user_states[phone] = "requesting_ride"
+            return """🧍 REQUEST A RIDE
+
+Reply with:
+FROM:
+TO:
+DATE:
+TIME:"""
+
         if lower == "/my_stats":
             cur.execute(
                 "SELECT COUNT(*) FROM trips WHERE driver_phone=%s",
-                (phone,)
+                (phone,),
             )
             total_trips = cur.fetchone()[0]
+
             return f"""📊 YOUR STATS
 
 Total Trips: {total_trips}
@@ -211,29 +229,21 @@ More analytics coming soon!"""
                 return "Usage: /complete 1"
 
             trip_id = int(parts[1])
+
             cur.execute(
                 "UPDATE trips SET completed=TRUE WHERE id=%s AND driver_phone=%s",
-                (trip_id, phone)
+                (trip_id, phone),
             )
             conn.commit()
+
             if cur.rowcount == 0:
                 return "❌ Trip not found."
             return "✅ Trip marked as complete!"
 
-        if lower == "/ride":
-            user_states[phone] = "requesting_ride"
-            return """🧍 REQUEST A RIDE
-
-Reply with:
-FROM:
-TO:
-DATE:
-TIME:"""
-
         return "Send /help to see available commands."
 
     except Exception as e:
-        print(f"❌ DB Error for {phone}: {e}")  # <- See exact DB error in Railway logs
+        print("❌ Bot error:", e)
         return "⚠️ Something went wrong. Try again."
 
     finally:
@@ -242,38 +252,37 @@ TIME:"""
         if conn:
             conn.close()
 
+
 # ==========================
 # SEND MESSAGE
 # ==========================
 
 def send_message(to, message):
-    url = f'https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages'
+    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+
     headers = {
-        'Authorization': f'Bearer {WHATSAPP_TOKEN}',
-        'Content-Type': 'application/json'
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
     }
+
     payload = {
-        'messaging_product': 'whatsapp',
-        'to': to,
-        'type': 'text',
-        'text': {'body': message}
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": message},
     }
+
     response = requests.post(url, json=payload, headers=headers)
+
     if response.status_code != 200:
-        print(f"❌ WhatsApp send error: {response.status_code} {response.text}")
+        print("❌ WhatsApp send error:", response.text)
 
-# ==========================
-# HOME ROUTE
-# ==========================
 
-@app.route('/')
+@app.route("/")
 def home():
-    return 'RouteRider Bot Running 🚗', 200
+    return "RouteRider Bot Running 🚗", 200
 
-# ==========================
-# RUN APP
-# ==========================
 
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
