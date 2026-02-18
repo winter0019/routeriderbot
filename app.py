@@ -19,7 +19,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db():
     if not DATABASE_URL:
-        raise Exception("DATABASE_URL not set")
+        raise Exception("DATABASE_URL not set in Railway variables")
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
@@ -43,8 +43,8 @@ def init_db():
             id SERIAL PRIMARY KEY,
             driver_phone VARCHAR(20),
             details TEXT,
-            seats INT,
-            price INT,
+            seats INT DEFAULT 0,
+            price NUMERIC DEFAULT 0,
             completed BOOLEAN DEFAULT FALSE
         );
         """)
@@ -71,11 +71,12 @@ def init_db():
         cur.close()
         conn.close()
         print("✅ Database initialized successfully")
+
     except Exception as e:
         print("❌ Database initialization failed:", e)
 
 
-# Initialize DB
+# Initialize DB on startup
 init_db()
 
 user_states = {}
@@ -106,13 +107,15 @@ def webhook():
                 message = value["messages"][0]
                 from_number = message["from"]
                 message_text = message["text"]["body"]
-
                 response = process_message(message_text, from_number)
                 if response:
                     send_message(from_number, response)
+
         except Exception as e:
             print("❌ Webhook processing error:", e)
+
         return jsonify({"status": "ok"}), 200
+
 
 # ==========================
 # BOT LOGIC
@@ -121,6 +124,7 @@ def webhook():
 def process_message(text, phone):
     text = text.strip()
     lower = text.lower()
+
     conn = None
     cur = None
 
@@ -128,123 +132,119 @@ def process_message(text, phone):
         conn = get_db()
         cur = conn.cursor()
 
-        # --------------------------
-        # DRIVER REGISTRATION
-        # --------------------------
+        # =====================
+        # STATE HANDLING
+        # =====================
+
         if user_states.get(phone) == "registering":
             cur.execute(
                 "INSERT INTO drivers (phone, details) VALUES (%s, %s)",
-                (phone, text)
+                (phone, text),
             )
             conn.commit()
             user_states.pop(phone)
             return "🎉 Registration successful! You are now a registered driver."
 
-        # --------------------------
-        # POST TRIP
-        # --------------------------
         if user_states.get(phone) == "posting_trip":
             try:
-                # Parse input lines
-                lines = [line.strip().replace(',', '') for line in text.splitlines() if line.strip()]
+                # Parse trip details
+                lines = [line.strip() for line in text.split("\n") if line.strip()]
                 trip_data = {}
                 for line in lines:
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        trip_data[key.strip().upper()] = value.strip()
+                    if ":" in line:
+                        key, val = line.split(":", 1)
+                        trip_data[key.strip().lower()] = val.strip()
 
-                required = ["DATE", "TIME", "SEATS", "PRICE"]
-                missing = [field for field in required if field not in trip_data]
-                if missing:
-                    return f"❌ Trip format error. Missing: {', '.join(missing)}"
+                # Validate required fields
+                for field in ["date", "time", "seats", "price"]:
+                    if field not in trip_data:
+                        return f"❌ Missing {field.upper()} in trip details."
 
-                # Convert SEATS and PRICE to integers
-                try:
-                    seats = int(trip_data["SEATS"].lstrip('0') or '0')
-                    price = int(trip_data["PRICE"].lstrip('0') or '0')
-                except ValueError:
-                    return "❌ SEATS and PRICE must be numbers."
+                seats = int(trip_data["seats"])
+                price = float(trip_data["price"])
 
-                details = f"DATE:{trip_data['DATE']} TIME:{trip_data['TIME']} SEATS:{seats} PRICE:{price}"
+                details_str = f"DATE: {trip_data['date']}, TIME: {trip_data['time']}"
 
                 cur.execute(
                     "INSERT INTO trips (driver_phone, details, seats, price) VALUES (%s, %s, %s, %s)",
-                    (phone, details, seats, price)
+                    (phone, details_str, seats, price)
                 )
                 conn.commit()
                 user_states.pop(phone)
                 return "🚗 Trip posted successfully!"
+
             except Exception as e:
                 print("❌ Post trip error:", e)
-                return "❌ Trip format error. Use DATE, TIME, SEATS, PRICE."
+                return "❌ Trip format error. Use DATE, TIME, SEATS, PRICE with numeric SEATS and PRICE."
 
-        # --------------------------
-        # REQUEST RIDE
-        # --------------------------
         if user_states.get(phone) == "requesting_ride":
             try:
-                # Parse ride request
-                lines = [line.strip().replace(',', '') for line in text.splitlines() if line.strip()]
-                ride_data = {}
-                for line in lines:
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        ride_data[key.strip().upper()] = value.strip()
-
-                required = ["FROM", "TO", "DATE", "TIME"]
-                missing = [field for field in required if field not in ride_data]
-                if missing:
-                    return f"❌ Ride format error. Missing: {', '.join(missing)}"
-
-                # Save ride request
-                details = f"FROM:{ride_data['FROM']} TO:{ride_data['TO']} DATE:{ride_data['DATE']} TIME:{ride_data['TIME']}"
+                # Insert the ride request
                 cur.execute(
                     "INSERT INTO ride_requests (passenger_phone, details) VALUES (%s, %s) RETURNING id",
-                    (phone, details)
+                    (phone, text)
                 )
-                request_id = cur.fetchone()[0]
-                conn.commit()
-                user_states.pop(phone)
+                ride_request_id = cur.fetchone()[0]
 
-                # --------------------------
-                # AUTO MATCHING
-                # --------------------------
+                # Parse passenger details
+                lines = [line.strip() for line in text.split("\n") if line.strip()]
+                ride_info = {}
+                for line in lines:
+                    if ":" in line:
+                        key, val = line.split(":", 1)
+                        ride_info[key.strip().lower()] = val.strip()
+
+                # Find available driver
                 cur.execute("""
-                    SELECT id, driver_phone, details, seats FROM trips
-                    WHERE completed=FALSE AND seats > 0
+                    SELECT id, driver_phone, seats, details, price
+                    FROM trips
+                    WHERE completed = FALSE AND seats > 0
                     ORDER BY id ASC
                     LIMIT 1
                 """)
-                trip = cur.fetchone()
-                if trip:
-                    trip_id, driver_phone, trip_details, seats = trip
+                driver_trip = cur.fetchone()
 
-                    # Reduce seat count
-                    cur.execute(
-                        "UPDATE trips SET seats = seats - 1 WHERE id=%s",
-                        (trip_id,)
-                    )
-                    # Mark ride request matched
-                    cur.execute(
-                        "UPDATE ride_requests SET matched=TRUE WHERE id=%s",
-                        (request_id,)
-                    )
-                    conn.commit()
+                if not driver_trip:
+                    return "🚕 Ride request submitted! Waiting for available drivers..."
 
-                    # Notify driver
-                    send_message(driver_phone, f"🚕 New passenger matched!\n{details}")
+                trip_id, driver_phone, seats, trip_details, price = driver_trip
 
-                    return f"🚕 Ride request submitted and matched to a driver! Trip details:\n{trip_details}"
-                else:
-                    return "🚕 Ride request submitted! Drivers will be matched soon."
+                # Reduce seat
+                cur.execute(
+                    "UPDATE trips SET seats = seats - 1 WHERE id = %s",
+                    (trip_id,)
+                )
+                cur.execute(
+                    "UPDATE ride_requests SET matched = TRUE WHERE id = %s",
+                    (ride_request_id,)
+                )
+                conn.commit()
+
+                # Notify passenger
+                passenger_msg = (
+                    f"✅ Ride matched!\nDriver: {driver_phone}\n"
+                    f"Trip: {trip_details}\nSeats left: {seats-1}\nPrice: {price}"
+                )
+
+                # Notify driver
+                driver_msg = (
+                    f"🚗 New passenger booked!\nPassenger: {phone}\n"
+                    f"Trip: {trip_details}\nSeats left: {seats-1}"
+                )
+
+                send_message(phone, passenger_msg)
+                send_message(driver_phone, driver_msg)
+                user_states.pop(phone)
+                return None
 
             except Exception as e:
-                print("❌ Ride request error:", e)
-                return "❌ Ride format error. Use FROM, TO, DATE, TIME."
+                print("❌ Ride matching error:", e)
+                return "⚠️ Something went wrong. Try again."
 
-        # --------------------------
+        # =====================
         # COMMANDS
-        # --------------------------
+        # =====================
+
         if lower == "/help":
             return """🚗 ROUTERIDER BOT COMMANDS
 
@@ -273,10 +273,10 @@ PLATE:"""
             return """🚗 POST TRIP
 
 Reply with:
-DATE:
-TIME:
-SEATS:
-PRICE:"""
+DATE: dd/mm/yyyy
+TIME: hh:mm am/pm
+SEATS: number
+PRICE: amount"""
 
         if lower == "/ride":
             user_states[phone] = "requesting_ride"
@@ -294,6 +294,7 @@ TIME:"""
                 (phone,),
             )
             total_trips = cur.fetchone()[0]
+
             return f"""📊 YOUR STATS
 
 Total Trips: {total_trips}
@@ -303,12 +304,15 @@ More analytics coming soon!"""
             parts = lower.split()
             if len(parts) != 2:
                 return "Usage: /complete 1"
+
             trip_id = int(parts[1])
+
             cur.execute(
                 "UPDATE trips SET completed=TRUE WHERE id=%s AND driver_phone=%s",
-                (trip_id, phone)
+                (trip_id, phone),
             )
             conn.commit()
+
             if cur.rowcount == 0:
                 return "❌ Trip not found."
             return "✅ Trip marked as complete!"
@@ -325,23 +329,28 @@ More analytics coming soon!"""
         if conn:
             conn.close()
 
+
 # ==========================
 # SEND MESSAGE
 # ==========================
 
 def send_message(to, message):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
     }
+
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "text",
         "text": {"body": message},
     }
+
     response = requests.post(url, json=payload, headers=headers)
+
     if response.status_code != 200:
         print("❌ WhatsApp send error:", response.text)
 
