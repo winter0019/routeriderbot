@@ -43,8 +43,8 @@ def init_db():
             id SERIAL PRIMARY KEY,
             driver_phone VARCHAR(20),
             details TEXT,
-            seats INT,
-            price INT,
+            seats INTEGER DEFAULT 0,
+            price INTEGER DEFAULT 0,
             completed BOOLEAN DEFAULT FALSE
         );
         """)
@@ -67,6 +67,17 @@ def init_db():
         );
         """)
 
+        # Earnings table
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS earnings (
+            id SERIAL PRIMARY KEY,
+            driver_phone VARCHAR(20),
+            trip_id INTEGER,
+            passenger_phone VARCHAR(20),
+            amount INTEGER
+        );
+        """)
+
         conn.commit()
         cur.close()
         conn.close()
@@ -76,6 +87,7 @@ def init_db():
         print("❌ Database initialization failed:", e)
 
 
+# Initialize DB on startup
 init_db()
 
 user_states = {}
@@ -111,6 +123,7 @@ def webhook():
             print("❌ Webhook processing error:", e)
         return jsonify({"status": "ok"}), 200
 
+
 # ==========================
 # BOT LOGIC
 # ==========================
@@ -118,6 +131,7 @@ def webhook():
 def process_message(text, phone):
     text = text.strip()
     lower = text.lower()
+
     conn = None
     cur = None
 
@@ -125,19 +139,22 @@ def process_message(text, phone):
         conn = get_db()
         cur = conn.cursor()
 
-        # ===== STATE HANDLING =====
+        # ----------------------
+        # STATES
+        # ----------------------
         if user_states.get(phone) == "registering":
             cur.execute(
                 "INSERT INTO drivers (phone, details) VALUES (%s, %s)",
-                (phone, text),
+                (phone, text)
             )
             conn.commit()
             user_states.pop(phone)
             return "🎉 Registration successful! You are now a registered driver."
 
+        # POST TRIP - Robust parsing
         if user_states.get(phone) == "posting_trip":
             try:
-                lines = text.splitlines()
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
                 trip_data = {}
                 for line in lines:
                     if ':' in line:
@@ -145,13 +162,18 @@ def process_message(text, phone):
                         trip_data[key.strip().upper()] = value.strip()
 
                 required = ["DATE", "TIME", "SEATS", "PRICE"]
-                if not all(field in trip_data for field in required):
-                    return "❌ Trip format error. Use DATE, TIME, SEATS, PRICE."
+                missing = [field for field in required if field not in trip_data]
+                if missing:
+                    return f"❌ Trip format error. Missing: {', '.join(missing)}"
 
-                seats = int(trip_data["SEATS"])
-                price = int(trip_data["PRICE"])
+                # Convert seats and price
+                try:
+                    seats = int(trip_data["SEATS"])
+                    price = int(trip_data["PRICE"])
+                except ValueError:
+                    return "❌ SEATS and PRICE must be numbers."
+
                 details = f"DATE:{trip_data['DATE']} TIME:{trip_data['TIME']}"
-
                 cur.execute(
                     "INSERT INTO trips (driver_phone, details, seats, price, completed) VALUES (%s, %s, %s, %s, FALSE)",
                     (phone, details, seats, price)
@@ -164,59 +186,62 @@ def process_message(text, phone):
                 print("❌ Trip parsing error:", e)
                 return "❌ Trip format error. Use DATE, TIME, SEATS, PRICE."
 
+        # REQUEST RIDE - Auto matching
         if user_states.get(phone) == "requesting_ride":
             try:
-                lines = text.splitlines()
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
                 ride_data = {}
                 for line in lines:
                     if ':' in line:
                         key, value = line.split(':', 1)
                         ride_data[key.strip().upper()] = value.strip()
-                required = ["FROM", "TO", "DATE", "TIME"]
-                if not all(field in ride_data for field in required):
-                    return "❌ Ride format error. Use FROM, TO, DATE, TIME."
 
-                ride_details = f"FROM:{ride_data['FROM']} TO:{ride_data['TO']} DATE:{ride_data['DATE']} TIME:{ride_data['TIME']}"
+                required = ["FROM", "TO", "DATE", "TIME"]
+                missing = [field for field in required if field not in ride_data]
+                if missing:
+                    return f"❌ Ride format error. Missing: {', '.join(missing)}"
+
+                details = f"FROM:{ride_data['FROM']} TO:{ride_data['TO']} DATE:{ride_data['DATE']} TIME:{ride_data['TIME']}"
                 cur.execute(
-                    "INSERT INTO ride_requests (passenger_phone, details, matched) VALUES (%s, %s, FALSE)",
-                    (phone, ride_details)
+                    "INSERT INTO ride_requests (passenger_phone, details) VALUES (%s, %s) RETURNING id",
+                    (phone, details)
                 )
+                ride_id = cur.fetchone()[0]
                 conn.commit()
                 user_states.pop(phone)
 
-                # ===== AUTO MATCHING =====
+                # Auto-match available driver with open seats
                 cur.execute("""
-                    SELECT id, driver_phone, seats FROM trips 
-                    WHERE completed=FALSE AND seats>0 
+                    SELECT id, driver_phone, details, seats, price
+                    FROM trips
+                    WHERE completed=FALSE AND seats>0
                     ORDER BY id ASC
                     LIMIT 1
                 """)
                 trip = cur.fetchone()
                 if trip:
-                    trip_id, driver_phone, seats = trip
-                    # Reduce seat
-                    seats -= 1
-                    cur.execute(
-                        "UPDATE trips SET seats=%s WHERE id=%s",
-                        (seats, trip_id)
-                    )
-                    # Mark ride as matched
-                    cur.execute(
-                        "UPDATE ride_requests SET matched=TRUE WHERE passenger_phone=%s AND matched=FALSE",
-                        (phone,)
-                    )
+                    trip_id, driver_phone, trip_details, seats, price = trip
+                    # Update seats
+                    cur.execute("UPDATE trips SET seats=seats-1 WHERE id=%s", (trip_id,))
+                    # Mark ride request as matched
+                    cur.execute("UPDATE ride_requests SET matched=TRUE WHERE id=%s", (ride_id,))
+                    # Add earnings
+                    cur.execute("INSERT INTO earnings (driver_phone, trip_id, passenger_phone, amount) VALUES (%s, %s, %s, %s)",
+                                (driver_phone, trip_id, phone, price))
                     conn.commit()
                     # Notify driver
-                    send_message(driver_phone, f"🚕 New passenger matched! Pick up {ride_data['FROM']} to {ride_data['TO']} on {ride_data['DATE']} at {ride_data['TIME']}")
-                    return "🚕 Ride request submitted and matched to a driver!"
-
-                return "🚕 Ride request submitted! Waiting for available drivers."
+                    send_message(driver_phone, f"🚕 New passenger matched!\nPassenger: {phone}\nTrip: {trip_details}\nFare: {price}")
+                    return f"🚕 Ride request submitted! You have been matched with a driver. Fare: {price}"
+                else:
+                    return "🚕 Ride request submitted! Waiting for available drivers."
 
             except Exception as e:
-                print("❌ Ride parsing error:", e)
+                print("❌ Ride request error:", e)
                 return "❌ Ride format error. Use FROM, TO, DATE, TIME."
 
-        # ===== COMMANDS =====
+        # ----------------------
+        # COMMANDS
+        # ----------------------
         if lower == "/help":
             return """🚗 ROUTERIDER BOT COMMANDS
 
@@ -260,25 +285,21 @@ DATE:
 TIME:"""
 
         if lower == "/my_stats":
-            cur.execute(
-                "SELECT COUNT(*) FROM trips WHERE driver_phone=%s",
-                (phone,),
-            )
+            cur.execute("SELECT COUNT(*) FROM trips WHERE driver_phone=%s", (phone,))
             total_trips = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(amount),0) FROM earnings WHERE driver_phone=%s", (phone,))
+            total_earnings = cur.fetchone()[0]
             return f"""📊 YOUR STATS
 
 Total Trips: {total_trips}
-More analytics coming soon!"""
+Total Earnings: ₦{total_earnings}"""
 
         if lower.startswith("/complete"):
             parts = lower.split()
             if len(parts) != 2:
                 return "Usage: /complete 1"
             trip_id = int(parts[1])
-            cur.execute(
-                "UPDATE trips SET completed=TRUE WHERE id=%s AND driver_phone=%s",
-                (trip_id, phone),
-            )
+            cur.execute("UPDATE trips SET completed=TRUE WHERE id=%s AND driver_phone=%s", (trip_id, phone))
             conn.commit()
             if cur.rowcount == 0:
                 return "❌ Trip not found."
@@ -289,6 +310,7 @@ More analytics coming soon!"""
     except Exception as e:
         print("❌ Bot error:", e)
         return "⚠️ Something went wrong. Try again."
+
     finally:
         if cur:
             cur.close()
