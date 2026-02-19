@@ -22,7 +22,12 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL not set in Railway variables")
-    return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
+    # psycopg v3 with dict rows
+    return psycopg.connect(
+        DATABASE_URL,
+        sslmode="require",
+        row_factory=dict_row
+    )
 
 def init_db():
     """Safe to run on boot. Creates tables if missing."""
@@ -141,7 +146,6 @@ def ensure_user(cur, phone: str, role: str, full_name=None):
     cur.execute("SELECT * FROM users WHERE phone=%s", (phone,))
     row = cur.fetchone()
     if row:
-        # update missing full_name if provided
         if full_name and not row.get("full_name"):
             cur.execute("UPDATE users SET full_name=%s WHERE id=%s", (full_name, row["id"]))
             cur.execute("SELECT * FROM users WHERE id=%s", (row["id"],))
@@ -179,13 +183,11 @@ def score_trip(trip, req_date, req_time):
     """
     score = 0
 
-    # date difference weight
     if req_date and trip["trip_date"]:
         score += abs((trip["trip_date"] - req_date).days) * 1000
     else:
         score += 5000
 
-    # time difference weight
     if req_time and trip["trip_time"]:
         t1 = trip["trip_time"].hour * 60 + trip["trip_time"].minute
         t2 = req_time.hour * 60 + req_time.minute
@@ -253,13 +255,11 @@ def process_message(text: str, phone: str) -> str:
 
     try:
         conn = get_db()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur = conn.cursor()
 
         state = user_states.get(phone, {}).get("state")
 
-        # --------------------------
-        # STATE: DRIVER REGISTRATION
-        # --------------------------
+        # --------- STATE: REGISTER DRIVER ---------
         if state == "register_driver":
             data = parse_kv_lines(text)
             full_name = data.get("name") or data.get("full name")
@@ -300,9 +300,7 @@ def process_message(text: str, phone: str) -> str:
             user_states.pop(phone, None)
             return "✅ Driver registered successfully! Now send /post_trip"
 
-        # --------------------------
-        # STATE: POST TRIP
-        # --------------------------
+        # --------- STATE: POST TRIP ---------
         if state == "post_trip":
             data = parse_kv_lines(text)
             origin = data.get("from") or data.get("origin")
@@ -346,9 +344,7 @@ def process_message(text: str, phone: str) -> str:
                 f"Seats: {trip['seats_total']} | Price: ₦{trip['price_per_seat']}"
             )
 
-        # --------------------------
-        # STATE: RIDE REQUEST
-        # --------------------------
+        # --------- STATE: REQUEST RIDE ---------
         if state == "request_ride":
             data = parse_kv_lines(text)
             origin = data.get("from") or data.get("origin")
@@ -399,9 +395,7 @@ def process_message(text: str, phone: str) -> str:
                 f"Seats left: {seats_left(best)}"
             )
 
-        # --------------------------
-        # COMMANDS
-        # --------------------------
+        # --------- COMMANDS ---------
         if lower == "/help":
             return (
                 "🚗 ROUTERIDER BOT COMMANDS\n\n"
@@ -424,7 +418,6 @@ def process_message(text: str, phone: str) -> str:
             )
 
         if lower == "/post_trip":
-            # ensure driver exists
             cur.execute("SELECT * FROM users WHERE phone=%s", (phone,))
             u = cur.fetchone()
             if not u or u["role"] != "driver":
@@ -553,5 +546,3 @@ def health():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-
