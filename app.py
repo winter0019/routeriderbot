@@ -1,6 +1,6 @@
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 from flask import Flask, request, jsonify
 import requests
 from dotenv import load_dotenv
@@ -22,7 +22,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL not set in Railway variables")
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
 
 def init_db():
     """Safe to run on boot. Creates tables if missing."""
@@ -553,4 +553,5 @@ def health():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
